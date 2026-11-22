@@ -208,8 +208,12 @@ class HomewerksSmartFanApi:
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, self._max_reconnect_delay)
             if await self.connect() and await self.request_state():
-                _LOGGER.info("Reconnected to %s:%s", self._host, self._port)
-                return
+                # The listener may have seen EOF while the status went out; only stop
+                # once the link is still up after a moment.
+                await asyncio.sleep(0.5)
+                if self._connected:
+                    _LOGGER.info("Reconnected to %s:%s", self._host, self._port)
+                    return
 
     def _start_reconnect(self) -> None:
         if self._should_reconnect and (
