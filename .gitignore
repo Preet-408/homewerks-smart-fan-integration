@@ -39,3 +39,6 @@ send_command.py
 
 # Claude
 .claude/
+
+# Local agent-tool state (not part of the integration)
+.ijfw/
