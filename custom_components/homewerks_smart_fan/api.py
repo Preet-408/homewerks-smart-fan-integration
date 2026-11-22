@@ -37,6 +37,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # No data for this long -> send GetStatus as a keepalive (it is read-only).
 IDLE_KEEPALIVE_SECONDS = 120
+# A stalled socket must not hold the lock forever.
+WRITE_TIMEOUT = 5
 
 
 class HomewerksSmartFanApi:
@@ -73,6 +75,7 @@ class HomewerksSmartFanApi:
         self._reconnect_delay = 1
         self._max_reconnect_delay = 60
         self._should_reconnect = True
+        self._gen = 0  # connection generation, see connect()
 
     # ---- callbacks / properties -------------------------------------------------
 
@@ -169,6 +172,9 @@ class HomewerksSmartFanApi:
             self._notify_state_change()
 
     # ---- connection -------------------------------------------------------------
+    #
+    # Each successful connect bumps a generation number. A listener only tears down the
+    # connection it was started for, so a stale listener can never close a newer socket.
 
     async def connect(self) -> bool:
         """Connect to the device."""
@@ -176,46 +182,53 @@ class HomewerksSmartFanApi:
             if self._connected:
                 return True
             try:
-                self._reader, self._writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(self._host, self._port),
                     timeout=CONNECTION_TIMEOUT,
                 )
             except (OSError, asyncio.TimeoutError) as err:
                 _LOGGER.debug("Failed to connect to %s:%s: %s", self._host, self._port, err)
-                self._connected = False
                 return False
+            old_listener = self._listener_task
+            self._gen += 1
+            self._reader, self._writer = reader, writer
             self._connected = True
             self._frames = FrameBuffer()
             self._reconnect_delay = 1
-            _LOGGER.debug("Connected to %s:%s", self._host, self._port)
-            self._listener_task = asyncio.create_task(self._listen_for_updates())
-            return True
+            self._listener_task = asyncio.create_task(self._listen_for_updates(self._gen, reader))
+        if old_listener is not None and not old_listener.done():
+            old_listener.cancel()
+        _LOGGER.debug("Connected to %s:%s", self._host, self._port)
+        self._notify_state_change()  # entities become available again
+        return True
 
-    async def _schedule_reconnect(self) -> None:
-        if not self._should_reconnect:
-            return
-        await asyncio.sleep(self._reconnect_delay)
-        self._reconnect_delay = min(self._reconnect_delay * 2, self._max_reconnect_delay)
-        if await self.connect():
-            _LOGGER.info("Reconnected to %s:%s", self._host, self._port)
-            await self.request_state()
-        elif self._should_reconnect:
-            self._reconnect_task = asyncio.create_task(self._schedule_reconnect())
+    async def _reconnect_loop(self) -> None:
+        """Retry until connected AND the status request went out (single loop, backoff)."""
+        while self._should_reconnect:
+            await asyncio.sleep(self._reconnect_delay)
+            self._reconnect_delay = min(self._reconnect_delay * 2, self._max_reconnect_delay)
+            if await self.connect() and await self.request_state():
+                _LOGGER.info("Reconnected to %s:%s", self._host, self._port)
+                return
 
     def _start_reconnect(self) -> None:
         if self._should_reconnect and (
             self._reconnect_task is None or self._reconnect_task.done()
         ):
-            self._reconnect_task = asyncio.create_task(self._schedule_reconnect())
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
-    def _drop_connection(self) -> None:
-        if self._connected:
-            self._connected = False
-            self._notify_state_change()  # entities go unavailable
+    def _drop_connection(self, gen: int) -> None:
+        """Tear down connection `gen` (no-op if a newer connection replaced it)."""
+        if gen != self._gen:
+            return
+        was_connected = self._connected
+        self._connected = False
         if self._writer is not None:
             self._writer.close()
         self._writer = None
         self._reader = None
+        if was_connected:
+            self._notify_state_change()  # entities go unavailable
 
     async def disconnect(self) -> None:
         """Disconnect from the device and stop reconnecting."""
@@ -230,6 +243,7 @@ class HomewerksSmartFanApi:
         self._reconnect_task = None
         self._listener_task = None
         async with self._lock:
+            self._gen += 1
             if self._writer is not None:
                 self._writer.close()
                 try:
@@ -240,12 +254,12 @@ class HomewerksSmartFanApi:
             self._reader = None
             self._connected = False
 
-    async def _listen_for_updates(self) -> None:
-        """Read frames pushed by the device (also used for command replies)."""
+    async def _listen_for_updates(self, gen: int, reader: asyncio.StreamReader) -> None:
+        """Read frames pushed by the device on connection `gen` (also command replies)."""
         idle = 0
-        while self._connected and self._reader is not None:
+        while gen == self._gen and self._connected:
             try:
-                data = await asyncio.wait_for(self._reader.read(4096), timeout=30)
+                data = await asyncio.wait_for(reader.read(4096), timeout=30)
             except asyncio.TimeoutError:
                 idle += 30
                 if idle >= IDLE_KEEPALIVE_SECONDS:
@@ -266,22 +280,25 @@ class HomewerksSmartFanApi:
                 _LOGGER.debug("Received: %s", parsed)
                 self._update_state_from_response(parsed)
 
-        self._drop_connection()
-        self._start_reconnect()
+        if gen == self._gen:
+            self._drop_connection(gen)
+            self._start_reconnect()
 
     async def _write(self, frame: bytes) -> bool:
         if not self._connected and not await self.connect():
+            self._start_reconnect()
             return False
         async with self._lock:
-            if self._writer is None:
+            writer, gen = self._writer, self._gen
+            if writer is None:
                 return False
             try:
-                self._writer.write(frame)
-                await self._writer.drain()
+                writer.write(frame)
+                await asyncio.wait_for(writer.drain(), timeout=WRITE_TIMEOUT)
                 return True
-            except Exception as err:  # noqa: BLE001
+            except (Exception, asyncio.TimeoutError) as err:  # noqa: BLE001
                 _LOGGER.debug("Write failed: %s", err)
-        self._drop_connection()
+        self._drop_connection(gen)
         self._start_reconnect()
         return False
 

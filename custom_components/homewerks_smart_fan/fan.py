@@ -6,36 +6,19 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-import voluptuous as vol
-
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import HomewerksSmartFanApi
-from .const import (
-    ATTR_DURATION,
-    DOMAIN,
-    SCAN_INTERVAL as SCAN_INTERVAL_SECONDS,
-    SERVICE_CANCEL_FAN_TIMER,
-    SERVICE_RUN_FAN_FOR,
-)
-from .protocol import MAX_FAN_TIMER_SECONDS
+from .const import DOMAIN, SCAN_INTERVAL as SCAN_INTERVAL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=SCAN_INTERVAL_SECONDS)
-
-
-def _valid_duration(value: Any) -> timedelta:
-    duration = cv.positive_time_period(value)
-    if not timedelta(seconds=1) <= duration <= timedelta(seconds=MAX_FAN_TIMER_SECONDS):
-        raise vol.Invalid("duration must be between 1 second and 23:59:59")
-    return duration
 
 
 async def async_setup_entry(
@@ -48,16 +31,6 @@ async def async_setup_entry(
     name = entry.data.get(CONF_NAME, "Homewerks Smart Fan")
 
     async_add_entities([HomewerksSmartFanEntity(api, entry, name)])
-
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(
-        SERVICE_RUN_FAN_FOR,
-        {vol.Required(ATTR_DURATION): _valid_duration},
-        "async_run_fan_for",
-    )
-    platform.async_register_entity_service(
-        SERVICE_CANCEL_FAN_TIMER, {}, "async_cancel_fan_timer"
-    )
 
 
 class HomewerksSmartFanEntity(FanEntity):
