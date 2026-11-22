@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-22 (Preet-408 fork)
+
+### Fixed
+- **State reads no longer change the device.** An empty-value "query" such as `{"fan_time":""}` or `{"percentage":""}` is treated by the fan as a write (it started the fan with a garbage timer in testing, and reset brightness to 100%). All reads, the startup sync, the poll and the keepalive now use the read-only `MCU+PAS+GetStatus&` command from the Homewerks app, which returns light power, brightness, color temperature, fan power and fan timer in one go. Empty values are refused before sending.
+- **TCP frames are reassembled** using the frame length, so a reply split across reads (or several replies in one read) is no longer dropped.
+- Malformed values from the device (unknown color temperatures, a garbled `fan_time`) are ignored instead of corrupting state.
+- Entities go unavailable promptly when the connection drops, and reconnect attempts don't stack.
+
+### Added
+- **Fan run timer** (the app's "Time of running the fan"): `homewerks_smart_fan.run_fan_for` (duration) and `homewerks_smart_fan.cancel_fan_timer` services, a `Fan timer ends` timestamp sensor, and a `timer_ends` attribute on the fan.
+- Unit tests for the protocol (`tests/`).
+
+### Changed
+- Only the fan entity polls (read-only GetStatus every 30 s); the light is push-only.
+- UPnP volume calls reuse Home Assistant's shared HTTP session.
+- Connection timeout raised to 8 s (the Wi-Fi module naps).
+
 ## [1.5.0] - 2026-05-17
 
 ### Added

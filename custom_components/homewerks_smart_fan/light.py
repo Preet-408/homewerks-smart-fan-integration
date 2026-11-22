@@ -59,7 +59,7 @@ class HomewerksSmartFanLight(LightEntity):
     _attr_min_color_temp_kelvin = MIN_COLOR_TEMP_KELVIN
     _attr_max_color_temp_kelvin = MAX_COLOR_TEMP_KELVIN
     _attr_supported_features = LightEntityFeature.TRANSITION
-    _attr_should_poll = True
+    _attr_should_poll = False  # state is pushed; the fan entity polls GetStatus
 
     def __init__(
         self,
@@ -221,7 +221,3 @@ class HomewerksSmartFanLight(LightEntity):
     def available(self) -> bool:
         """Return True if entity is available."""
         return self._api.connected
-
-    async def async_update(self) -> None:
-        """Poll the device for current state as a fallback."""
-        await self._api.request_state()

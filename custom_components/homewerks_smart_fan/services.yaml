@@ -1,0 +1,17 @@
+run_fan_for:
+  target:
+    entity:
+      integration: homewerks_smart_fan
+      domain: fan
+  fields:
+    duration:
+      required: true
+      example: "00:20:00"
+      selector:
+        duration:
+
+cancel_fan_timer:
+  target:
+    entity:
+      integration: homewerks_smart_fan
+      domain: fan

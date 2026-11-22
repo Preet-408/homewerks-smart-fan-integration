@@ -7,6 +7,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import HomewerksSmartFanApi
 from .const import CONF_FRIENDLY_NAME, CONF_UDN, CONF_UUID, DOMAIN
@@ -14,7 +15,7 @@ from .discovery import fetch_device_info, find_device_by_udn
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.FAN, Platform.LIGHT, Platform.MEDIA_PLAYER]
+PLATFORMS: list[Platform] = [Platform.FAN, Platform.LIGHT, Platform.MEDIA_PLAYER, Platform.SENSOR]
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -61,7 +62,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     host = entry.data[CONF_HOST]
     udn = entry.data.get(CONF_UDN, "")
 
-    api = HomewerksSmartFanApi(host)
+    session = async_get_clientsession(hass)
+    api = HomewerksSmartFanApi(host, session=session)
 
     if not await api.connect():
         # Connection failed — try IP recovery if we have a UDN
@@ -80,7 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     entry,
                     data={**entry.data, CONF_HOST: recovered_device.host},
                 )
-                api = HomewerksSmartFanApi(recovered_device.host)
+                api = HomewerksSmartFanApi(recovered_device.host, session=session)
                 if not await api.connect():
                     _LOGGER.error(
                         "Still cannot connect to %s after IP recovery",
@@ -114,7 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 },
             )
 
-    # Request initial state from the device
+    # Request initial state from the device (read-only GetStatus)
     await api.request_state()
 
     hass.data.setdefault(DOMAIN, {})

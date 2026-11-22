@@ -39,5 +39,21 @@
       "already_configured": "This device is already configured. The IP address has been updated.",
       "reconfigure_successful": "IP address updated successfully."
     }
+  },
+  "services": {
+    "run_fan_for": {
+      "name": "Run fan for",
+      "description": "Run the fan for a set time; the fan stops itself when the timer ends (same as the app's fan timer).",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "How long to run the fan (up to 23:59:59)."
+        }
+      }
+    },
+    "cancel_fan_timer": {
+      "name": "Cancel fan timer",
+      "description": "Cancel the run timer. The fan stops too, like Cancel in the Homewerks app."
+    }
   }
 }
