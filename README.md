@@ -101,3 +101,11 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each version.
 ## License
 
 MIT License
+
+## Fork notes (Preet-408)
+
+This fork reads state only with the read-only `GetStatus` command and adds the fan run timer.
+
+- **Never send an empty value as a "query".** The fan treats `{"fan_time":""}` or `{"percentage":""}` as a write. The client refuses empty values.
+- **Fan timer:** `homewerks_smart_fan.run_fan_for` with `duration: "00:20:00"` runs the fan, then the fan stops itself. `homewerks_smart_fan.cancel_fan_timer` cancels the timer and stops the fan, like Cancel in the app. The `Fan timer ends` sensor shows when the fan will stop.
+- **Protocol reference:** taken from the Homewerks app (com.wifiaudio.HomeNetWerks 1.2.0, class `IOT4NormalMCUUtil`). It's documented at the top of `protocol.py`.

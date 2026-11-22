@@ -10,6 +10,7 @@ from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import HomewerksSmartFanApi
@@ -38,6 +39,7 @@ class HomewerksSmartFanEntity(FanEntity):
     _attr_has_entity_name = True
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
     _attr_icon = "mdi:fan"
+    # This entity owns the periodic read-only GetStatus poll for the whole device.
     _attr_should_poll = True
 
     def __init__(
@@ -75,6 +77,12 @@ class HomewerksSmartFanEntity(FanEntity):
         """Return true if fan is on."""
         return self._api.state.get("fan_power", False)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the run timer."""
+        ends = self._api.state.get("fan_timer_ends")
+        return {"timer_ends": ends.isoformat() if ends else None}
+
     async def async_turn_on(
         self,
         percentage: int | None = None,
@@ -82,11 +90,23 @@ class HomewerksSmartFanEntity(FanEntity):
         **kwargs: Any,
     ) -> None:
         """Turn on the fan."""
-        await self._api.set_fan_power(True)
+        if not await self._api.set_fan_power(True):
+            raise HomeAssistantError("Could not reach the fan")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the fan."""
-        await self._api.set_fan_power(False)
+        if not await self._api.set_fan_power(False):
+            raise HomeAssistantError("Could not reach the fan")
+
+    async def async_run_fan_for(self, duration: timedelta) -> None:
+        """Run the fan for a duration; the fan stops itself when the timer ends."""
+        if not await self._api.set_fan_timer(int(duration.total_seconds())):
+            raise HomeAssistantError("Could not reach the fan")
+
+    async def async_cancel_fan_timer(self) -> None:
+        """Cancel the run timer (the fan stops too, same as the app's Cancel)."""
+        if not await self._api.cancel_fan_timer():
+            raise HomeAssistantError("Could not reach the fan")
 
     @property
     def available(self) -> bool:
@@ -94,5 +114,5 @@ class HomewerksSmartFanEntity(FanEntity):
         return self._api.connected
 
     async def async_update(self) -> None:
-        """Poll the device for current state as a fallback."""
+        """Read-only status poll (GetStatus); replies arrive via the listener."""
         await self._api.request_state()

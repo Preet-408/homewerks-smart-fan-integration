@@ -2,19 +2,67 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 import logging
+from typing import Any
 
+import voluptuous as vol
+
+from homeassistant.components.fan import DOMAIN as FAN_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv, service
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import HomewerksSmartFanApi
-from .const import CONF_FRIENDLY_NAME, CONF_UDN, CONF_UUID, DOMAIN
+from .const import (
+    ATTR_DURATION,
+    CONF_FRIENDLY_NAME,
+    CONF_UDN,
+    CONF_UUID,
+    DOMAIN,
+    SERVICE_CANCEL_FAN_TIMER,
+    SERVICE_RUN_FAN_FOR,
+)
 from .discovery import fetch_device_info, find_device_by_udn
+from .protocol import MAX_FAN_TIMER_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.FAN, Platform.LIGHT, Platform.MEDIA_PLAYER]
+PLATFORMS: list[Platform] = [Platform.FAN, Platform.LIGHT, Platform.MEDIA_PLAYER, Platform.SENSOR]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def valid_duration(value: Any) -> timedelta:
+    """A positive duration the device accepts (1 s to 23:59:59)."""
+    duration = cv.positive_time_period(value)
+    if not timedelta(seconds=1) <= duration <= timedelta(seconds=MAX_FAN_TIMER_SECONDS):
+        raise vol.Invalid("duration must be between 1 second and 23:59:59")
+    return duration
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the fan timer services (homewerks_smart_fan.run_fan_for / cancel_fan_timer)."""
+    service.async_register_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_RUN_FAN_FOR,
+        entity_domain=FAN_DOMAIN,
+        schema={vol.Required(ATTR_DURATION): valid_duration},
+        func="async_run_fan_for",
+    )
+    service.async_register_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_CANCEL_FAN_TIMER,
+        entity_domain=FAN_DOMAIN,
+        schema=None,
+        func="async_cancel_fan_timer",
+    )
+    return True
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -61,7 +109,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     host = entry.data[CONF_HOST]
     udn = entry.data.get(CONF_UDN, "")
 
-    api = HomewerksSmartFanApi(host)
+    session = async_get_clientsession(hass)
+    api = HomewerksSmartFanApi(host, session=session)
 
     if not await api.connect():
         # Connection failed — try IP recovery if we have a UDN
@@ -80,7 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     entry,
                     data={**entry.data, CONF_HOST: recovered_device.host},
                 )
-                api = HomewerksSmartFanApi(recovered_device.host)
+                api = HomewerksSmartFanApi(recovered_device.host, session=session)
                 if not await api.connect():
                     _LOGGER.error(
                         "Still cannot connect to %s after IP recovery",
@@ -114,7 +163,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 },
             )
 
-    # Request initial state from the device
+    # Request initial state from the device (read-only GetStatus)
     await api.request_state()
 
     hass.data.setdefault(DOMAIN, {})
