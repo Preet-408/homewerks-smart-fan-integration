@@ -129,28 +129,44 @@ class HomewerksSmartFanApi:
             return True
         return False
 
-    def _apply_fan_timer(self, seconds: int) -> bool:
-        ends = (
-            datetime.now(timezone.utc) + timedelta(seconds=seconds) if seconds > 0 else None
-        )
-        changed = self._set("fan_timer_seconds", seconds)
-        old = self._state.get("fan_timer_ends")
-        # Only move the end time if it shifts by more than a few seconds (avoids churn on polls).
-        if (old is None) != (ends is None) or (
-            old is not None and ends is not None and abs((ends - old).total_seconds()) > 5
-        ):
+    def _apply_fan_timer(self, seconds: int, *, rearm: bool = False) -> bool:
+        """Track when the current run ends.
+
+        The device's fan_time is the run LENGTH it was set to, not the time left, and it is
+        still reported while the fan is off. So: no end time while off; when a run starts
+        (fan turns on, the length changes, or we re-arm it) the end is fixed at now + length
+        and polls don't move it.
+        """
+        changed = False
+        on = bool(self._state.get("fan_power"))
+        old_ends = self._state.get("fan_timer_ends")
+        old_secs = self._state.get("fan_timer_seconds", 0)
+        if not on or seconds <= 0:
+            ends = None
+        elif rearm or old_ends is None or seconds != old_secs:
+            ends = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        else:
+            ends = old_ends
+        changed |= self._set("fan_timer_seconds", seconds if on else 0)
+        if ends != old_ends:
             self._state["fan_timer_ends"] = ends
             changed = True
         return changed
 
-    def _update_state_from_response(self, parsed: dict[str, Any], notify: bool = True) -> None:
+    def _update_state_from_response(
+        self, parsed: dict[str, Any], notify: bool = True, *, rearm: bool = False
+    ) -> None:
         """Merge one state payload from the device (or an optimistic command)."""
         changed = False
         if KEY_FAN_POWER in parsed and parsed[KEY_FAN_POWER] in (VALUE_ON, VALUE_OFF):
             on = parsed[KEY_FAN_POWER] == VALUE_ON
+            was_on = bool(self._state.get("fan_power"))
             changed |= self._set("fan_power", on)
             if not on:
                 changed |= self._apply_fan_timer(0)
+            elif not was_on:
+                # Fan just started: a new run, so the end time is fixed from now.
+                self._state["fan_timer_ends"] = None
         if KEY_LIGHT_POWER in parsed and parsed[KEY_LIGHT_POWER] in (VALUE_ON, VALUE_OFF):
             changed |= self._set("light_power", parsed[KEY_LIGHT_POWER] == VALUE_ON)
         if KEY_PERCENTAGE in parsed:
@@ -167,7 +183,7 @@ class HomewerksSmartFanApi:
             if seconds is None:
                 _LOGGER.debug("Ignoring malformed fan_time %r", parsed[KEY_FAN_TIME])
             else:
-                changed |= self._apply_fan_timer(seconds)
+                changed |= self._apply_fan_timer(seconds, rearm=rearm)
         if changed and notify:
             self._notify_state_change()
 
@@ -332,7 +348,7 @@ class HomewerksSmartFanApi:
         # The device switches the fan on/off itself; mirror that until it reports back.
         secs = parse_fan_time(value) or 0
         self._update_state_from_response(
-            {KEY_FAN_POWER: VALUE_ON if secs else VALUE_OFF, KEY_FAN_TIME: value}
+            {KEY_FAN_POWER: VALUE_ON if secs else VALUE_OFF, KEY_FAN_TIME: value}, rearm=True
         )
         return True
 
