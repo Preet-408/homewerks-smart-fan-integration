@@ -171,3 +171,40 @@ def test_reads_use_getstatus_and_timer_command():
     ]
     # No empty-value "queries" ever go out.
     assert not any(b'""' in s for s in sent)
+
+
+def test_timer_end_is_fixed_while_running_and_cleared_when_off(monkeypatch):
+    """fan_time is the run length (reported even when off), not the time left."""
+    import datetime as dt
+
+    api = _api()
+    t0 = dt.datetime(2026, 11, 24, 12, 0, tzinfo=dt.timezone.utc)
+    clock = {"now": t0}
+
+    class FakeDT(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    monkeypatch.setattr(api_mod, "datetime", FakeDT)
+    # Off, but the device still reports its preset length: no end time.
+    api._update_state_from_response({"fan_power": "OFF", "fan_time": "00:20:00"})
+    assert api.state["fan_timer_ends"] is None
+    # Run started by us: end fixed at now + 15 min.
+    api._update_state_from_response({"fan_power": "ON", "fan_time": "00:15:00"}, rearm=True)
+    end = t0 + dt.timedelta(minutes=15)
+    assert api.state["fan_timer_ends"] == end
+    # Later polls report the same length: end must not move.
+    clock["now"] = t0 + dt.timedelta(minutes=5)
+    api._update_state_from_response({"fan_power": "ON", "fan_time": "00:15:00"})
+    assert api.state["fan_timer_ends"] == end
+    # Re-armed (e.g. motion extends the run): new end from now.
+    api._update_state_from_response({"fan_power": "ON", "fan_time": "00:15:00"}, rearm=True)
+    assert api.state["fan_timer_ends"] == clock["now"] + dt.timedelta(minutes=15)
+    # Fan stops: end cleared even though fan_time is still reported.
+    api._update_state_from_response({"fan_power": "OFF", "fan_time": "00:15:00"})
+    assert api.state["fan_timer_ends"] is None
+    # Started externally (wall/Alexa) with a preset: end fixed from that first poll.
+    clock["now"] = t0 + dt.timedelta(minutes=30)
+    api._update_state_from_response({"fan_power": "ON", "fan_time": "00:20:00"})
+    assert api.state["fan_timer_ends"] == clock["now"] + dt.timedelta(minutes=20)
